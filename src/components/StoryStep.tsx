@@ -1,12 +1,12 @@
 'use client'
 
-import React, { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import Image from 'next/image';
-
+import React, { useState, useEffect } from 'react';
+import { default as NextjsImage } from 'next/image';
+import getMetadata from 'next/image'
 import StoryCard from '@/components/StoryCard'
 import QuestionnaireCard from '@/components/QuestionnaireCard';
 import clsx from 'clsx';
+import { encode } from 'base64-arraybuffer';
 
 interface StoryStepProps {
     selectedImage: string;
@@ -14,7 +14,7 @@ interface StoryStepProps {
 
 interface QuestionnaireConfig {
     question: string;
-    answerOptions: { option: string; color: string }[];
+    options: { option: string; color: string }[];
 }
 
 const answerOptionColors = {
@@ -30,13 +30,15 @@ enum StoryStepType {
 }
 
 const StoryStep: React.FC<StoryStepProps> = ({ selectedImage }) => {
+    const [firstScreen, setFirstScreen] = useState(false);
+    const [loading, setLoading] = useState(false);
     // Initial state is the questionnary to begin the story
     const [step, setStep] = useState<StoryStepType>(StoryStepType.Questionnaire);
     // Initial state will be used at the begining of the story, 
     // then create questionnaries from gemini
     const [questionnaire, setQuestionnaire] = useState<QuestionnaireConfig>({
         question: 'What story do you want to create?',
-        answerOptions: [
+        options: [
             { option: 'Funny', color: answerOptionColors.Funny },
             { option: 'Adventure', color: answerOptionColors.Adventure },
             { option: 'Mistery', color: answerOptionColors.Mistery },
@@ -44,42 +46,106 @@ const StoryStep: React.FC<StoryStepProps> = ({ selectedImage }) => {
         ],
     });
     const [storyText, setStoryText] = useState<string>('');
+    const [imageMetadata, setImageMetadata] = useState<{ width: number; height: number; base64: string | null }>({
+        width: 0,
+        height: 0,
+        base64: null,
+    });
 
-    const handleQuestionnaireOptionClick = (selectedAnswer: string) => {
-        // Fetch the story text from the external API using imageUrl as a parameter
-        // fetch(`YOUR_API_ENDPOINT?imageUrl=${selectedImage}`)
-        //     .then((response) => response.json())
-        //     .then((data) => {
-        //         setStoryText(data.storyText);
-        //         setStep(StoryStepType.Story);
-        //     })
-        //     .catch((error) => console.error('Error fetching story text:', error));
+    useEffect(() => {
+        convertImageToBase64();
+    }, []);
 
-        setStoryText(
-            "Once upon a time, in a magical forest, there was a wise old tree named Oakington. " +
-            "One day, Oakington overheard a group of animals having a hilarious conversation. " +
-            "The squirrel was telling jokes, and even the serious owl couldn't help but laugh. " +
-            "The rabbit chimed in with a witty comment, making everyone burst into laughter."
-        );
-        setStep(StoryStepType.Story);
+    const convertImageToBase64 = () => {
+        // Get the image element
+        const imageElement = document.querySelector('.imageRendered') as HTMLImageElement;
+
+        if (imageElement) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+
+            // Set canvas dimensions to match the image
+            canvas.width = imageElement.width;
+            canvas.height = imageElement.height;
+
+            if (context) {
+                // Draw the image onto the canvas
+                context.drawImage(imageElement, 0, 0, imageElement.width, imageElement.height);
+
+                // Convert the canvas content to base64
+                const base64 = canvas.toDataURL('image/jpeg');
+
+                setImageMetadata({
+                    width: imageElement.width,
+                    height: imageElement.height,
+                    base64,
+                });
+            } else {
+                console.error('Unable to get 2D rendering context for canvas.');
+            }
+        }
     };
 
+    const handleQuestionnaireOptionClick = async (selectedAnswer: string) => {
+        const api_url = 'http://localhost:5000/generate_story';
+        const { width, height, base64 } = imageMetadata;
+        let prompt = ''
+        if (firstScreen) {
+            prompt = `Given the image, write a 100-word short introduction of a story for small kids with the theme ${selectedAnswer}. Important: Be short, do not exceed 100 words.`
+        } else {
+            prompt = `Write two short paragraphs as a continuation of the story ${storyText}, taking into account the answer: ${selectedAnswer} for the question: ${questionnaire.question}. Important: Be short, do not exceed 100 words.`
+        }
+        if (base64) {
+            setLoading(true);
+
+            const payload = {
+                prompt: prompt,
+                images: [base64],
+                width: width,
+                height: height,
+                format: 'JPEG',
+            };
+
+            try {
+                const response = await fetch(api_url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload),
+                });
+
+                const data = await response.json();
+                console.log("data = ", data);
+                setStoryText(data.story_text)
+            } catch (error) {
+                console.error('Error calling API:', error);
+            }
+
+            setLoading(false);
+            setFirstScreen(false);
+            setStep(StoryStepType.Story);
+        }
+    }
+
     const handleStoryNextClick = async () => {
-        // Perform API call to generate questionnaire using story text and selectedImage
+        console.log("handleStoryNextClick")
+        const api_url = 'http://localhost:5000/generate_questionnaire';
+        setLoading(true);
         try {
-            const response = await fetch('QUESTIONNAIRE_API_ENDPOINT', {
+            const response = await fetch(api_url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    storyText: storyText, // Combine storyText into a single string
-                    selectedImage,
+                    story_text: storyText,
                 }),
             });
 
             if (response.ok) {
                 const data = await response.json();
+                console.log("data = ", data)
                 setQuestionnaire(data.questionnaire);
                 setStep(StoryStepType.Questionnaire);
             } else {
@@ -89,6 +155,9 @@ const StoryStep: React.FC<StoryStepProps> = ({ selectedImage }) => {
         } catch (error) {
             console.error('Error generating questionnaire:', error);
         }
+
+        setLoading(false);
+        setStep(StoryStepType.Questionnaire);
     }
 
     return (
@@ -100,13 +169,15 @@ const StoryStep: React.FC<StoryStepProps> = ({ selectedImage }) => {
                     { "opacity-90": step === StoryStepType.Story },
                 )} style={{ margin: '20px', borderRadius: '10px', overflow: 'hidden' }}
                 >
-                    <Image
+                    <NextjsImage
+                        className='imageRendered'
                         src={`/images/${selectedImage}`}
                         alt="Selected Image"
                         fill style={{ objectFit: "cover" }}
                         sizes='200px'
                         priority={false}
                     />
+
                 </div>
             )}
 
@@ -114,16 +185,23 @@ const StoryStep: React.FC<StoryStepProps> = ({ selectedImage }) => {
                 className="flex flex-col items-center justify-center absolute inset-0 text-white"
                 style={{ zIndex: 1 }}
             >
-                {step === StoryStepType.Questionnaire && (
+                {loading && (
+                    <div className="flex flex-col items-center justify-center h-16">
+                        <h2 className="text-2xl font-semibold mb-4">Crafting...</h2>
+
+                        <div className="w-14 h-14 border-t-4 border-blue-500 border-solid rounded-full animate-spin"></div>
+                    </div>
+                )}
+                {!loading && step === StoryStepType.Questionnaire && (
                     <QuestionnaireCard
                         question={questionnaire.question}
-                        options={questionnaire.answerOptions}
+                        options={questionnaire.options}
                         onOptionClick={handleQuestionnaireOptionClick}
                     />
                 )}
 
                 {/* Add more steps as needed with additional QuestionnaireCard components */}
-                {step === StoryStepType.Story && (
+                {!loading && step === StoryStepType.Story && (
                     <StoryCard
                         storyText={storyText}
                         onStoryNextClick={handleStoryNextClick}
